@@ -1,40 +1,80 @@
 import pytest
 import requests
 import allure
-from courier_generator import register_new_courier_and_return_login_password, login_courier, delete_courier, BASE_URL
-from urls import COURIER_LOGIN_URL, COURIER_CREATE_URL, COURIER_DELETE_URL
+from courier_generator import generate_random_string, register_new_courier, login_courier, delete_courier
+from urls import COURIER_CREATE_URL, COURIER_LOGIN_URL, COURIER_DELETE_URL
 
 
 @pytest.fixture(scope="function")
-def new_courier_data():
+def unique_courier_credentials():
     """
-    Фикстура для создания нового курьера перед тестом
-    и его удаления после теста. Возвращает [login, password, firstName, courier_id].
+    Фикстура для генерации уникальных учетных данных курьера.
+    Не отправляет запросы к API.
+    Возвращает словарь {"login": ..., "password": ..., "firstName": ...}.
     """
-    with allure.step("Подготовка тестового курьера: создание"):
-        login, password, first_name = register_new_courier_and_return_login_password()  # Возвращает None, если регистрация не 201
+    login = generate_random_string(10)
+    password = generate_random_string(10)
+    first_name = generate_random_string(10)
 
-        if not login:  # Если register_new_courier_and_return_login_password вернул пустой список
-            pytest.fail("Не удалось создать курьера для фикстуры. Проверьте метод регистрации.")
+    with allure.step("Генерация уникальных учетных данных курьера"):
+        allure.attach(f"Login: {login}, Password: {password}, FirstName: {first_name}", name="Сгенерированные данные",
+                      attachment_type=allure.attachment_type.TEXT)
 
-        with allure.step(f"Логинимся курьером '{login}' для получения ID"):
-            courier_id = login_courier(login, password)
-            if courier_id is None:
-                pytest.fail(f"Не удалось залогиниться под созданным курьером '{login}' для получения ID.")
+    return {
+        "login": login,
+        "password": password,
+        "firstName": first_name
+    }
+
+
+@pytest.fixture(scope="function")
+def created_courier_and_cleanup():
+    """
+    Фикстура для создания курьера перед тестом и его удаления после.
+    Возвращает словарь с данными курьера и его ID.
+    Если курьер не создается или не логинится, фикстура проваливается.
+    """
+    courier_login = generate_random_string(10)
+    courier_password = generate_random_string(10)
+    courier_first_name = generate_random_string(10)
+    courier_id = None
+
+    payload = {
+        "login": courier_login,
+        "password": courier_password,
+        "firstName": courier_first_name
+    }
+
+    try:
+        with allure.step(f"Подготовка: создание тестового курьера с логином '{courier_login}'"):
+            response = requests.post(COURIER_CREATE_URL, data=payload)
+            # Проверяем успешность создания прямо в фикстуре, так как это необходимо для ее работы
+            assert response.status_code == 201, f"Фикстура: Ошибка создания курьера (статус {response.status_code}): {response.text}"
+            assert response.json().get(
+                "ok") is True, f"Фикстура: Ошибка создания курьера (тело ответа): {response.text}"
+
+        with allure.step(f"Подготовка: логин курьера '{courier_login}' для получения ID"):
+            courier_id = login_courier(courier_login, courier_password)
+            assert courier_id is not None, f"Фикстура: Не удалось залогиниться под созданным курьером '{courier_login}' для получения ID."
 
         yield {
-            "login": login,
-            "password": password,
-            "firstName": first_name,
+            "login": courier_login,
+            "password": courier_password,
+            "firstName": courier_first_name,
             "id": courier_id
         }
 
-    with allure.step(f"Очистка: удаление тестового курьера с ID: {courier_id}"):
-        if courier_id:  # Убедимся, что ID курьера существует перед попыткой удаления
-            if not delete_courier(courier_id):
-                allure.attach(f"Не удалось удалить курьера с ID: {courier_id}", name="Ошибка очистки",
-                              attachment_type=allure.attachment_type.TEXT)
-                # pytest.fail("Ошибка очистки: не удалось удалить тестового курьера.") # Можно провалить, если очистка критична
-            else:
-                allure.attach(f"Курьер с ID: {courier_id} успешно удален.", name="Очистка",
-                              attachment_type=allure.attachment_type.TEXT)rier_id)
+    finally:
+        # Удаляем курьера после теста, независимо от исхода
+        if courier_id:
+            with allure.step(f"Очистка: удаление тестового курьера с ID: {courier_id}"):
+                if not delete_courier(courier_id):
+                    allure.attach(f"Не удалось удалить курьера с ID: {courier_id}", name="Ошибка очистки",
+                                  attachment_type=allure.attachment_type.TEXT)
+                    # Можно добавить pytest.fail("Ошибка очистки: не удалось удалить тестового курьера.") если это критично.
+                else:
+                    allure.attach(f"Курьер с ID: {courier_id} успешно удален.", name="Очистка",
+                                  attachment_type=allure.attachment_type.TEXT)
+        else:
+            allure.attach("Очистка: ID курьера для удаления не был получен, удаление пропущено.",
+                          name="Очистка пропущена", attachment_type=allure.attachment_type.TEXT)
